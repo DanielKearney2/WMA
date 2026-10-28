@@ -20,24 +20,23 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   minZoom: 3,
 }).addTo(map);
 
+// Dedicated pane so buffer polygons always render below markers
+map.createPane('buffersPane');
+map.getPane('buffersPane').style.zIndex = 350;
+
 /** Markers layer – circle markers for each pin */
 const markersLayer = L.layerGroup().addTo(map);
 
 /** Buffers layer – 100 m polygon overlays (rendered below markers) */
 const buffersLayer = L.layerGroup().addTo(map);
 
-// Ensure buffers render underneath markers in the z-order
-map.removeLayer(buffersLayer);
-map.removeLayer(markersLayer);
-buffersLayer.addTo(map);   // added first → lower z-index
-markersLayer.addTo(map);   // added second → higher z-index
-
 function colourForCategory(category) {
   return category === 'VIOLENT' ? VIOLENT_COLOUR : PEACEFUL_COLOUR;
 }
 
 function buildPopupHtml(feature) {
-  const p       = feature.properties;
+  const p       = feature.properties || {};
+  const pinId   = feature.id ?? p.id;
   const cat     = p.category || 'PEACEFUL';
   const colour  = colourForCategory(cat);
   const label   = cat === 'VIOLENT' ? 'Violent Incident' : 'Peaceful Protest';
@@ -58,7 +57,7 @@ function buildPopupHtml(feature) {
       <p class="text-muted" style="font-size:0.72rem;">Added: ${created}</p>
       <button
         class="btn btn-sm btn-outline-danger mt-1 w-100 delete-pin-btn"
-        data-pin-id="${p.id}"
+        data-pin-id="${pinId}"
       >
         <i class="bi bi-trash me-1"></i>Delete Pin
       </button>
@@ -66,7 +65,7 @@ function buildPopupHtml(feature) {
 }
 
 function addPinToMap(feature) {
-  const p      = feature.properties;
+  const p      = feature.properties || {};
   const coords = feature.geometry.coordinates;  // [lng, lat]
   const lat    = coords[1];
   const lng    = coords[0];
@@ -74,28 +73,42 @@ function addPinToMap(feature) {
 
   /* --- Circle marker --- */
   const marker = L.circleMarker([lat, lng], {
-    radius:      9,
-    fillColor:   colour,
-    color:       '#ffffff',
-    weight:      2,
-    opacity:     1,
-    fillOpacity: 0.95,
+    radius:              9,
+    fillColor:           colour,
+    color:               '#ffffff',
+    weight:              2,
+    opacity:             1,
+    fillOpacity:         0.95,
+    bubblingMouseEvents: false,
   });
 
   const popup = L.popup({ maxWidth: 280 }).setContent(buildPopupHtml(feature));
   marker.bindPopup(popup);
 
-  // Wire up delete button inside the popup
-  marker.on('popupopen', () => {
-    document.querySelectorAll('.delete-pin-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
+  // Wire up delete button inside this specific popup instance
+  marker.on('popupopen', (e) => {
+    const popupEl = e.popup.getElement();
+    if (!popupEl) return;
+    const btn = popupEl.querySelector('.delete-pin-btn');
+    if (btn) {
+      btn.onclick = async () => {
         const pinId = btn.dataset.pinId;
-        if (await deletePin(pinId)) {
+        if (!pinId || pinId === 'undefined') {
+          console.error('Invalid pin ID for deletion:', pinId);
+          return;
+        }
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Deleting...';
+        const success = await deletePin(pinId);
+        if (success) {
           marker.closePopup();
           await refreshPins();
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Failed (Retry)';
         }
-      });
-    });
+      };
+    }
   });
 
   markersLayer.addLayer(marker);
@@ -103,6 +116,8 @@ function addPinToMap(feature) {
   /* --- 100 m buffer polygon --- */
   if (p.buffer_geom && p.buffer_geom.coordinates) {
     const bufferLayer = L.geoJSON(p.buffer_geom, {
+      pane:        'buffersPane',
+      interactive: false,
       style: {
         fillColor:   colour,
         fillOpacity: 0.15,
@@ -261,7 +276,11 @@ function getCsrfToken() {
     .split(';')
     .map((c) => c.trim())
     .find((c) => c.startsWith(name + '='));
-  return cookie ? decodeURIComponent(cookie.split('=')[1]) : '';
+  if (cookie) {
+    return decodeURIComponent(cookie.split('=')[1]);
+  }
+  const input = document.querySelector('[name=csrfmiddlewaretoken]');
+  return input ? input.value : '';
 }
 
 /** Toggle the submit button between normal and loading states. */

@@ -1,18 +1,3 @@
-"""
-Serializers for the mapper app.
-
-Three tiers per SPEC#1.md §5:
-  - SafetyPinCreateSerializer  – validates lat/lon/category POST body, builds Point geometry
-  - SafetyPinGeoSerializer     – GeoJSON FeatureCollection output (GeoFeatureModelSerializer)
-  - CityBoundaryGeoSerializer  – GeoJSON output for city boundary polygons
-
-Input format (POST /api/v1/pins/):
-  { "title": "...", "description": "...", "category": "PEACEFUL",
-    "latitude": 48.8566, "longitude": 2.3522 }
-
-Output: GeoJSON Feature with geometry + properties including buffer_geom.
-"""
-
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
@@ -20,18 +5,7 @@ from django.contrib.gis.geos import Point
 
 from .models import CityBoundary, SafetyPin
 
-
-# ---------------------------------------------------------------------------
-# SafetyPin serializers
-# ---------------------------------------------------------------------------
-
 class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
-    """
-    GeoJSON FeatureCollection serializer for SafetyPin.
-    Exposes the point geometry as the primary geo_field and includes
-    buffer_geom in properties for Leaflet polygon rendering.
-    """
-
     class Meta:
         model = SafetyPin
         geo_field = "geom"
@@ -47,19 +21,6 @@ class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
 
 
 class SafetyPinCreateSerializer(serializers.Serializer):
-    """
-    Write-only serializer for creating a SafetyPin from flat lat/lon input.
-
-    Validates:
-      - latitude  in [-90,  90]
-      - longitude in [-180, 180]
-      - category  in {PEACEFUL, VIOLENT}
-      - (optional) title, description
-
-    Performs a city-boundary containment check and delegates save to the
-    model (which computes the 100 m PostGIS buffer).
-    """
-
     title = serializers.CharField(max_length=200)
     description = serializers.CharField(
         allow_blank=True, required=False, default=""
@@ -86,10 +47,6 @@ class SafetyPinCreateSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
-        """
-        Cross-field validation: ensure the point lies inside at least one
-        registered CityBoundary (SPEC#1 Q3 containment check).
-        """
         point = Point(data["longitude"], data["latitude"], srid=4326)
         if not CityBoundary.objects.filter(geom__contains=point).exists():
             raise serializers.ValidationError(
@@ -108,28 +65,14 @@ class SafetyPinCreateSerializer(serializers.Serializer):
         pin.save()  # triggers calculate_buffer() in model.save()
         return pin
 
-
-# ---------------------------------------------------------------------------
-# CityBoundary serializers
-# ---------------------------------------------------------------------------
-
 class CityBoundaryGeoSerializer(GeoFeatureModelSerializer):
-    """GeoJSON serializer for CityBoundary polygons."""
-
     class Meta:
         model = CityBoundary
         geo_field = "geom"
         fields = ["id", "name", "created_at"]
         read_only_fields = ["id", "created_at"]
 
-
-# ---------------------------------------------------------------------------
-# Utility / parameter serializers (used by spatial filter views)
-# ---------------------------------------------------------------------------
-
 class ProximityQuerySerializer(serializers.Serializer):
-    """Validates ?lat=&lon=&radius_m=&limit= query parameters (SPEC Q1, Q2)."""
-
     lat = serializers.FloatField()
     lon = serializers.FloatField()
     radius_m = serializers.FloatField(
@@ -149,8 +92,6 @@ class ProximityQuerySerializer(serializers.Serializer):
 
 
 class BoundingBoxQuerySerializer(serializers.Serializer):
-    """Validates ?bbox=min_lon,min_lat,max_lon,max_lat query parameter."""
-
     bbox = serializers.CharField(
         help_text="Comma-separated: min_lon,min_lat,max_lon,max_lat"
     )

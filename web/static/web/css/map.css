@@ -1,0 +1,107 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  overflow: hidden;          /* no scrollbars; map is full-screen */
+}
+
+#map {
+  width: 100%;
+  height: 100vh;
+  cursor: crosshair;
+}
+
+#pin-count-badge {
+  position: fixed;
+  top: 12px;
+  right: 54px;          /* nudge left of the Leaflet zoom controls */
+  z-index: 1000;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  pointer-events: none;
+}
+
+#legend {
+  position: fixed;
+  bottom: 30px;
+  right: 10px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.93);
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  font-size: 0.8rem;
+  min-width: 160px;
+  backdrop-filter: blur(4px);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid rgba(0,0,0,0.25);
+}
+
+.peaceful-swatch { background-color: #0072B2; }
+.violent-swatch  { background-color: #D55E00; }
+
+.pin-popup h6 {
+  margin-bottom: 4px;
+  font-size: 0.9rem;
+}
+
+.pin-popup .badge {
+  font-size: 0.7rem;
+}
+
+.pin-popup p {
+  font-size: 0.8rem;
+  margin: 0;
+  color: #555;
+}
+
+.leaflet-interactive:hover {
+  filter: brightness(1.15);
+  transition: filter 0.15s ease;
+}
+
+.modal-header {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #fff;
+  border-radius: 0.375rem 0.375rem 0 0;
+}
+
+.modal-header .btn-close {
+  filter: invert(1);
+}
+
+.form-check-inline {
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+}
+
+.form-check-inline:has(input[value="PEACEFUL"]:checked) {
+  border-color: #0072B2;
+  background: #e8f4fd;
+}
+
+.form-check-inline:has(input[value="VIOLENT"]:checked) {
+  border-color: #D55E00;
+  background: #fdeee8;
+}

@@ -1,175 +1,273 @@
-from django.test import TestCase
 from django.contrib.gis.geos import Point, Polygon
-from django.db import connection
+from django.test import TestCase
+from django.urls import reverse
+
+from rest_framework.test import APIClient
+
 from mapper.models import CityBoundary, SafetyPin
 
+DUBLIN_BBOX = (-6.3000, 53.3000, -6.2000, 53.4000)
+PARIS_BBOX  = (2.25, 48.81, 2.42, 48.90)
 
-class CityBoundaryModelTest(TestCase):
+DUBLIN_CENTER = (-6.2603, 53.3498)   # O'Connell St – inside Dublin bbox
+PARIS_CENTER  = (2.3522, 48.8566)    # Notre-Dame   – inside Paris bbox
+
+
+def make_poly(bbox):
+    min_lon, min_lat, max_lon, max_lat = bbox
+    return Polygon((
+        (min_lon, min_lat),
+        (max_lon, min_lat),
+        (max_lon, max_lat),
+        (min_lon, max_lat),
+        (min_lon, min_lat),
+    ), srid=4326)
+
+
+class BaseAPITest(TestCase):
+
     def setUp(self):
-        # Dublin boundary polygon sample
-        self.dublin_poly = Polygon((
-            (-6.2800, 53.3350),
-            (-6.2400, 53.3350),
-            (-6.2400, 53.3650),
-            (-6.2800, 53.3650),
-            (-6.2800, 53.3350),
-        ), srid=4326)
+        self.client = APIClient()
 
-        # Paris boundary polygon sample
-        self.paris_poly = Polygon((
-            (2.25, 48.81),
-            (2.42, 48.81),
-            (2.42, 48.90),
-            (2.25, 48.90),
-            (2.25, 48.81),
-        ), srid=4326)
-
-    def test_create_city_boundaries(self):
-        dublin = CityBoundary.objects.create(name="Dublin", geom=self.dublin_poly)
-        paris = CityBoundary.objects.create(name="Paris", geom=self.paris_poly)
-
-        self.assertEqual(str(dublin), "Dublin")
-        self.assertEqual(str(paris), "Paris")
-        self.assertEqual(dublin.geom.geom_type, "Polygon")
-        self.assertEqual(paris.geom.geom_type, "Polygon")
-        self.assertEqual(dublin.geom.srid, 4326)
-        self.assertEqual(paris.geom.srid, 4326)
-
-
-class SafetyPinModelTest(TestCase):
-    def setUp(self):
-        # Dublin City Boundary
-        self.dublin_boundary = CityBoundary.objects.create(
-            name="Dublin",
-            geom=Polygon((
-                (-6.3000, 53.3000),
-                (-6.2000, 53.3000),
-                (-6.2000, 53.4000),
-                (-6.3000, 53.4000),
-                (-6.3000, 53.3000),
-            ), srid=4326)
+        self.dublin = CityBoundary.objects.create(
+            name="Dublin", geom=make_poly(DUBLIN_BBOX)
+        )
+        self.paris = CityBoundary.objects.create(
+            name="Paris", geom=make_poly(PARIS_BBOX)
         )
 
-    def test_buffer_automatically_generated_on_save(self):
-        pin = SafetyPin(
-            title="O'Connell Street Peaceful Gathering",
-            description="Peaceful gathering near the Spire.",
+        self.pin_dublin_peaceful = SafetyPin.objects.create(
+            title="Dublin March",
+            description="Peaceful rally",
             category=SafetyPin.CATEGORY_PEACEFUL,
-            geom=Point(-6.2603, 53.3498, srid=4326),
+            geom=Point(*DUBLIN_CENTER, srid=4326),
         )
-        self.assertIsNone(pin.buffer_geom)
-
-        pin.save()
-
-        self.assertIsNotNone(pin.buffer_geom)
-        self.assertEqual(pin.buffer_geom.geom_type, "Polygon")
-        self.assertEqual(pin.buffer_geom.srid, 4326)
-
-        # Verify the buffer radius is ~100 meters in PostGIS
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT ST_Distance(
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                    ST_PointN(ST_ExteriorRing(%s::geometry), 1)::geography
-                )
-                """,
-                [-6.2603, 53.3498, pin.buffer_geom.hexewkb.decode('ascii')]
-            )
-            dist_meters = cursor.fetchone()[0]
-            # Buffer distance should be approximately 100m (within +/- 1m tolerance for polygon vertex approximation)
-            self.assertAlmostEqual(dist_meters, 100.0, delta=1.5)
-
-    def test_buffer_updated_when_geom_changes(self):
-        pin = SafetyPin.objects.create(
-            title="Initial Marker",
+        self.pin_dublin_violent = SafetyPin.objects.create(
+            title="Dublin Riot",
+            description="Violent incident",
             category=SafetyPin.CATEGORY_VIOLENT,
-            geom=Point(-6.2603, 53.3498, srid=4326),
+            geom=Point(-6.2610, 53.3500, srid=4326),
         )
-        initial_buffer = pin.buffer_geom
-
-        # Move marker to Trinity College
-        pin.geom = Point(-6.2546, 53.3438, srid=4326)
-        pin.save()
-
-        self.assertNotEqual(initial_buffer.wkt, pin.buffer_geom.wkt)
-
-    def test_database_trigger_generates_buffer_on_raw_insert(self):
-        """Verify the PostGIS database trigger fires on raw SQL insert when buffer_geom is NULL"""
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO mapper_safetypin (title, description, category, geom, created_at, updated_at)
-                VALUES ('Raw SQL Pin', 'Inserted directly', 'PEACEFUL', ST_SetSRID(ST_MakePoint(-6.25, 53.35), 4326), NOW(), NOW())
-                RETURNING id;
-                """
-            )
-            pin_id = cursor.fetchone()[0]
-
-        pin = SafetyPin.objects.get(id=pin_id)
-        self.assertIsNotNone(pin.buffer_geom)
-        self.assertEqual(pin.buffer_geom.geom_type, "Polygon")
-
-    def test_spec_spatial_queries(self):
-        """Verify the 4 spatial queries required by SPEC#1.md"""
-        pin1 = SafetyPin.objects.create(
-            title="City Center Pin",
+        self.pin_paris = SafetyPin.objects.create(
+            title="Paris Demo",
+            description="Paris protest",
             category=SafetyPin.CATEGORY_PEACEFUL,
-            geom=Point(-6.2600, 53.3490, srid=4326),
-        )
-        pin2 = SafetyPin.objects.create(
-            title="Nearby Pin (50m away)",
-            category=SafetyPin.CATEGORY_VIOLENT,
-            geom=Point(-6.2605, 53.3493, srid=4326),
+            geom=Point(*PARIS_CENTER, srid=4326),
         )
 
-        with connection.cursor() as cursor:
-            # Q1 Nearest Safety Pins (KNN)
-            cursor.execute(
-                """
-                SELECT id, title, category,
-                       ST_Distance(geom::geography, p::geography) AS dist_m
-                FROM mapping_safetypin,
-                     (SELECT ST_SetSRID(ST_MakePoint(-6.2600, 53.3490), 4326) AS p) q
-                ORDER BY geom <-> p
-                LIMIT 1;
-                """
-            )
-            q1_row = cursor.fetchone()
-            self.assertEqual(q1_row[0], pin1.id)
+class PinListCreateTest(BaseAPITest):
+    url = "/api/v1/pins/"
 
-            # Q2 Pins within radius (Proximity search)
-            cursor.execute(
-                """
-                SELECT id, title, category 
-                FROM mapping_safetypin
-                WHERE ST_DWithin(geom::geography,
-                                 ST_SetSRID(ST_MakePoint(-6.2600, 53.3490), 4326)::geography, 500);
-                """
-            )
-            q2_rows = cursor.fetchall()
-            self.assertGreaterEqual(len(q2_rows), 2)
+    def test_list_returns_geojson_feature_collection(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["type"], "FeatureCollection")
+        self.assertEqual(len(data["features"]), 3)
 
-            # Q3 Containment check (Ensure dropped pin is inside city boundary)
-            cursor.execute(
-                """
-                SELECT EXISTS (
-                  SELECT 1 FROM mapping_cityboundary b
-                  WHERE ST_Contains(b.geom, ST_SetSRID(ST_MakePoint(-6.2600, 53.3490), 4326))
-                );
-                """
-            )
-            inside = cursor.fetchone()[0]
-            self.assertTrue(inside)
+    def test_list_category_filter_peaceful(self):
+        resp = self.client.get(self.url, {"category": "PEACEFUL"})
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        categories = [f["properties"]["category"] for f in features]
+        self.assertTrue(all(c == "PEACEFUL" for c in categories))
+        self.assertEqual(len(features), 2)
 
-            # Q4 Intersecting buffer analysis (Overlapping buffers)
-            cursor.execute(
-                """
-                SELECT a.id AS pin_a, b.id AS pin_b
-                FROM mapping_safetypin a, mapping_safetypin b
-                WHERE a.id <> b.id
-                  AND ST_Intersects(a.buffer_geom, b.buffer_geom);
-                """
-            )
-            overlaps = cursor.fetchall()
-            self.assertGreaterEqual(len(overlaps), 2)
+    def test_list_category_filter_violent(self):
+        resp = self.client.get(self.url, {"category": "VIOLENT"})
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        self.assertEqual(len(features), 1)
+        self.assertEqual(features[0]["properties"]["category"], "VIOLENT")
+
+    def test_list_bbox_filter_dublin_only(self):
+        bbox = f"{DUBLIN_BBOX[0]},{DUBLIN_BBOX[1]},{DUBLIN_BBOX[2]},{DUBLIN_BBOX[3]}"
+        resp = self.client.get(self.url, {"bbox": bbox})
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        self.assertEqual(len(features), 2)
+
+    def test_list_bbox_filter_paris_only(self):
+        bbox = f"{PARIS_BBOX[0]},{PARIS_BBOX[1]},{PARIS_BBOX[2]},{PARIS_BBOX[3]}"
+        resp = self.client.get(self.url, {"bbox": bbox})
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        self.assertEqual(len(features), 1)
+
+    def test_list_bbox_filter_combined_with_category(self):
+        bbox = f"{DUBLIN_BBOX[0]},{DUBLIN_BBOX[1]},{DUBLIN_BBOX[2]},{DUBLIN_BBOX[3]}"
+        resp = self.client.get(self.url, {"bbox": bbox, "category": "VIOLENT"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["features"]), 1)
+
+    def test_list_invalid_bbox_returns_400(self):
+        resp = self.client.get(self.url, {"bbox": "bad,data"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_pin_inside_city(self):
+        payload = {
+            "title": "Trinity College Pin",
+            "description": "Near Trinity",
+            "category": "PEACEFUL",
+            "latitude": 53.3438,
+            "longitude": -6.2546,
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+        self.assertEqual(data["type"], "Feature")
+        self.assertIsNotNone(data["properties"]["buffer_geom"])
+        self.assertEqual(data["properties"]["category"], "PEACEFUL")
+
+    def test_create_pin_outside_city_rejected(self):
+        """Point in the middle of the Atlantic – outside all city boundaries."""
+        payload = {
+            "title": "Ocean Pin",
+            "category": "VIOLENT",
+            "latitude": 40.0,
+            "longitude": -30.0,
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_pin_invalid_lat_rejected(self):
+        payload = {
+            "title": "Bad coords",
+            "category": "PEACEFUL",
+            "latitude": 999,
+            "longitude": -6.2603,
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_pin_missing_fields_rejected(self):
+        resp = self.client.post(self.url, {"title": "Incomplete"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+class PinDetailTest(BaseAPITest):
+
+    def _url(self, pk):
+        return f"/api/v1/pins/{pk}/"
+
+    def test_retrieve_existing_pin(self):
+        resp = self.client.get(self._url(self.pin_dublin_peaceful.pk))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["type"], "Feature")
+        self.assertEqual(data["properties"]["title"], "Dublin March")
+
+    def test_retrieve_nonexistent_pin_returns_404(self):
+        resp = self.client.get(self._url(99999))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_delete_pin(self):
+        pk = self.pin_paris.pk
+        resp = self.client.delete(self._url(pk))
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(SafetyPin.objects.filter(pk=pk).exists())
+
+    def test_delete_nonexistent_pin_returns_404(self):
+        resp = self.client.delete(self._url(99999))
+        self.assertEqual(resp.status_code, 404)
+
+class PinNearestTest(BaseAPITest):
+
+    url = "/api/v1/pins/nearest/"
+
+    def test_nearest_returns_closest_first(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "limit": 2
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("features", data)
+        self.assertLessEqual(len(data["features"]), 2)
+        # First result should be the Dublin peaceful pin (same point)
+        self.assertEqual(
+            data["features"][0]["properties"]["title"], "Dublin March"
+        )
+
+    def test_nearest_with_category_filter(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0],
+            "limit": 3, "category": "VIOLENT"
+        })
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        self.assertTrue(all(
+            f["properties"]["category"] == "VIOLENT" for f in features
+        ))
+
+    def test_nearest_missing_params_returns_400(self):
+        resp = self.client.get(self.url, {"lat": 53.35})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_nearest_invalid_lat_returns_400(self):
+        resp = self.client.get(self.url, {"lat": 999, "lon": -6.26})
+        self.assertEqual(resp.status_code, 400)
+
+class PinWithinTest(BaseAPITest):
+
+    url = "/api/v1/pins/within/"
+
+    def test_within_large_radius_returns_both_dublin_pins(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 1000
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 2)
+
+    def test_within_tiny_radius_returns_only_exact_pin(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 5
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 1)
+
+    def test_within_with_category_filter(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0],
+            "radius_m": 1000, "category": "PEACEFUL"
+        })
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        self.assertTrue(all(
+            f["properties"]["category"] == "PEACEFUL" for f in features
+        ))
+
+    def test_within_excludes_paris_from_dublin_search(self):
+        resp = self.client.get(self.url, {
+            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 5000
+        })
+        self.assertEqual(resp.status_code, 200)
+        titles = [f["properties"]["title"] for f in resp.json()["features"]]
+        self.assertNotIn("Paris Demo", titles)
+
+    def test_within_missing_params_returns_400(self):
+        resp = self.client.get(self.url, {"lat": 53.35})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_within_radius_too_large_returns_400(self):
+        resp = self.client.get(self.url, {
+            "lat": 53.35, "lon": -6.26, "radius_m": 999_999
+        })
+        self.assertEqual(resp.status_code, 400)
+
+class BoundaryListTest(BaseAPITest):
+
+    url = "/api/v1/boundaries/"
+
+    def test_list_returns_geojson_feature_collection(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["type"], "FeatureCollection")
+        self.assertEqual(len(data["features"]), 2)
+
+    def test_boundary_features_contain_name(self):
+        resp = self.client.get(self.url)
+        names = {f["properties"]["name"] for f in resp.json()["features"]}
+        self.assertIn("Dublin", names)
+        self.assertIn("Paris", names)

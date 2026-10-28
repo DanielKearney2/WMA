@@ -1,3 +1,6 @@
-from django.db import models
+"""
+Re-export models from mapper app for compatibility.
+"""
+from mapper.models import CityBoundary, SafetyPin
 
-# Create your models here.
+__all__ = ["CityBoundary", "SafetyPin"]

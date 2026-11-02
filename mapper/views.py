@@ -1,5 +1,5 @@
 from django.contrib.gis.geos import Point, Polygon
-from django.contrib.gis.db.models.functions import Distance
+from django.contrib.gis.db.models.functions import Distance, GeometryDistance
 from django.db import connection as db_connection
 
 from rest_framework import status
@@ -95,7 +95,7 @@ def pins_nearest(request):
     qs = _apply_category_filter(qs, request)
     qs = (
         qs.annotate(distance=Distance("geom", center))
-        .order_by("distance")[: data["limit"]]
+        .order_by(GeometryDistance("geom", center))[: data["limit"]]
     )
 
     out = SafetyPinGeoSerializer(qs, many=True)

@@ -1,6 +1,7 @@
 services:
   db:
     image: postgis/postgis:16-3.4
+    networks: [backend]
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -15,6 +16,7 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:9
+    networks: [backend]
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
@@ -28,6 +30,7 @@ services:
 
   web:
     build: .
+    networks: [backend]
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - .:/app
@@ -48,3 +51,10 @@ services:
 volumes:
   postgis_data:
   pgadmin_data:
+
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

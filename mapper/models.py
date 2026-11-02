@@ -1,6 +1,7 @@
 from django.db import models, connection
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import GEOSGeometry
+from django.contrib.postgres.indexes import GistIndex
 
 
 class CityBoundary(gis_models.Model):
@@ -24,6 +25,9 @@ class CityBoundary(gis_models.Model):
         verbose_name = "City Boundary"
         verbose_name_plural = "City Boundaries"
         ordering = ["name"]
+        indexes = [
+            GistIndex(fields=["geom"], name="mapper_cityboundary_geom_gist"),
+        ]
 
     def __str__(self):
         return self.name
@@ -77,6 +81,8 @@ class SafetyPin(gis_models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["category", "-created_at"], name="mapper_pin_cat_created_idx"),
+            GistIndex(fields=["geom"], name="mapper_pin_geom_gist"),
+            GistIndex(fields=["buffer_geom"], name="mapper_pin_buffer_gist"),
         ]
 
     def calculate_buffer(self):

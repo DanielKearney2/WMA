@@ -34,6 +34,116 @@
   <!-- ===== Full-Screen Map ===== -->
   <div id="map"></div>
 
+  <!-- ===== Spatial Query Toolbar (top-left) ===== -->
+  <div id="map-toolbar" class="card shadow-sm border-0">
+    <div class="card-body p-2">
+      <!-- Main Bar: Modes, City Jumps, Category Filter, Boundaries, Reset -->
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        
+        <!-- Interaction Modes -->
+        <div class="btn-group btn-group-sm" role="group" aria-label="Map Interaction Modes">
+          <input type="radio" class="btn-check" name="map-mode" id="mode-drop" value="drop" autocomplete="off" checked>
+          <label class="btn btn-outline-primary" for="mode-drop" title="Click map to drop incident pin">
+            <i class="bi bi-pin-map-fill me-1"></i>Drop Pin
+          </label>
+
+          <input type="radio" class="btn-check" name="map-mode" id="mode-nearest" value="nearest" autocomplete="off">
+          <label class="btn btn-outline-primary" for="mode-nearest" title="PostGIS KNN nearest search (ST_Distance)">
+            <i class="bi bi-crosshair me-1"></i>Nearest (KNN)
+          </label>
+
+          <input type="radio" class="btn-check" name="map-mode" id="mode-radius" value="radius" autocomplete="off">
+          <label class="btn btn-outline-primary" for="mode-radius" title="PostGIS radius search (ST_DWithin)">
+            <i class="bi bi-record-circle me-1"></i>Within Radius
+          </label>
+        </div>
+
+        <div class="vr d-none d-sm-block"></div>
+
+        <!-- Quick Jump to Cities -->
+        <div class="btn-group btn-group-sm" role="group" aria-label="City Views">
+          <button type="button" class="btn btn-outline-secondary" id="btn-jump-dublin" title="Fly to Dublin">
+            Dublin
+          </button>
+          <button type="button" class="btn btn-outline-secondary" id="btn-jump-paris" title="Fly to Paris">
+            Paris
+          </button>
+        </div>
+
+        <div class="vr d-none d-md-block"></div>
+
+        <!-- Category Filter -->
+        <div class="d-flex align-items-center gap-1">
+          <label for="filter-category" class="small text-muted mb-0 d-none d-lg-inline">Category:</label>
+          <select id="filter-category" class="form-select form-select-sm" style="width: auto;">
+            <option value="">All Categories</option>
+            <option value="PEACEFUL">Peaceful Only</option>
+            <option value="VIOLENT">Violent Only</option>
+          </select>
+        </div>
+
+        <!-- Boundaries Toggle Switch -->
+        <div class="form-check form-switch d-flex align-items-center mb-0 ms-1" title="Toggle PostGIS city boundary polygon overlay">
+          <input class="form-check-input mt-0" type="checkbox" role="switch" id="toggle-boundaries" checked>
+          <label class="form-check-label small ms-1 text-nowrap" for="toggle-boundaries">Boundaries</label>
+        </div>
+
+        <!-- Clear / Reset Query Button -->
+        <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-clear-query" title="Clear spatial query and restore all pins">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Reset
+        </button>
+      </div>
+
+      <!-- Mode Subpanels / Parameter Controls -->
+      <div id="toolbar-subpanel" class="mt-2 pt-1 border-top">
+        <!-- Drop Mode Note -->
+        <div id="subpanel-drop" class="small text-muted d-flex align-items-center">
+          <i class="bi bi-info-circle text-primary me-1"></i>
+          <span>Click anywhere within the Dublin or Paris boundary to drop a safety pin (validated by <code class="text-dark">ST_Contains</code>).</span>
+        </div>
+
+        <!-- Nearest Mode Controls -->
+        <div id="subpanel-nearest" class="d-none small text-muted d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-crosshair text-primary me-1"></i>
+          <span>Click on the map or an existing pin to find closest pins via PostGIS <code class="text-dark">ST_Distance</code>.</span>
+          <div class="d-inline-flex align-items-center ms-auto gap-1">
+            <label for="nearest-limit" class="fw-semibold text-nowrap mb-0">Limit:</label>
+            <select id="nearest-limit" class="form-select form-select-sm py-0 ps-2 pe-4" style="width: auto; height: 26px;">
+              <option value="3">3 closest</option>
+              <option value="5" selected>5 closest</option>
+              <option value="10">10 closest</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Radius Mode Controls -->
+        <div id="subpanel-radius" class="d-none small text-muted d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-record-circle text-primary me-1"></i>
+          <span>Click on the map or an existing pin to search within radius using PostGIS <code class="text-dark">ST_DWithin</code>.</span>
+          <div class="d-inline-flex align-items-center ms-auto gap-2">
+            <label for="radius-slider" class="fw-semibold text-nowrap mb-0">Radius:</label>
+            <input type="range" class="form-range" id="radius-slider" min="200" max="10000" step="100" value="1000" style="width: 120px;">
+            <span id="radius-val" class="badge bg-secondary font-monospace">1,000 m</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Query Results Panel (floating left) ===== -->
+  <div id="query-results-panel" class="card shadow-lg border-0 d-none">
+    <div class="card-header bg-primary text-white py-2 px-3 d-flex justify-content-between align-items-center">
+      <span class="fw-semibold small" id="results-title">
+        <i class="bi bi-compass me-1"></i>Query Results
+      </span>
+      <button type="button" class="btn-close btn-close-white btn-sm" id="btn-close-results" aria-label="Close"></button>
+    </div>
+    <div class="card-body p-2" id="results-body">
+      <div id="results-meta" class="small text-muted mb-2 px-1"></div>
+      <div id="results-list" class="list-group list-group-flush"></div>
+    </div>
+  </div>
+
   <!-- ===== Legend (bottom-right, above Leaflet attribution) ===== -->
   <div id="legend" class="leaflet-control">
     <h6 class="mb-2 fw-semibold">
@@ -46,6 +156,14 @@
     <div class="legend-item mt-1">
       <span class="legend-swatch violent-swatch"></span>
       <span>Violent Incident</span>
+    </div>
+    <div class="legend-item mt-1">
+      <span class="legend-swatch boundary-swatch"></span>
+      <span>City Boundary (PostGIS)</span>
+    </div>
+    <div class="legend-item mt-1">
+      <span class="legend-swatch query-swatch"></span>
+      <span>Query Search Zone</span>
     </div>
     <hr class="my-2">
     <div class="text-muted" style="font-size:0.7rem;">

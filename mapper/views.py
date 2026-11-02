@@ -137,7 +137,11 @@ def pins_within(request):
         )
         pin_ids = [row[0] for row in cursor.fetchall()]
 
-    qs = qs.filter(pk__in=pin_ids)
+    qs = (
+        qs.filter(pk__in=pin_ids)
+        .annotate(distance=Distance("geom", center))
+        .order_by("distance")
+    )
 
     out = SafetyPinGeoSerializer(qs, many=True)
     return Response(

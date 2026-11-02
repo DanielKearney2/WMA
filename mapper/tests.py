@@ -186,6 +186,8 @@ class PinNearestTest(BaseAPITest):
         self.assertEqual(
             data["features"][0]["properties"]["title"], "Dublin March"
         )
+        self.assertIn("distance", data["features"][0]["properties"])
+        self.assertEqual(data["features"][0]["properties"]["distance"], 0.0)
 
     def test_nearest_with_category_filter(self):
         resp = self.client.get(self.url, {
@@ -217,6 +219,7 @@ class PinWithinTest(BaseAPITest):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["count"], 2)
+        self.assertIn("distance", data["features"][0]["properties"])
 
     def test_within_tiny_radius_returns_only_exact_pin(self):
         resp = self.client.get(self.url, {

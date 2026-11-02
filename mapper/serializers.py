@@ -6,6 +6,8 @@ from django.contrib.gis.geos import Point
 from .models import CityBoundary, SafetyPin
 
 class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
+    distance = serializers.SerializerMethodField(required=False)
+
     class Meta:
         model = SafetyPin
         geo_field = "geom"
@@ -16,8 +18,19 @@ class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
             "category",
             "buffer_geom",
             "created_at",
+            "distance",
         ]
-        read_only_fields = ["id", "buffer_geom", "created_at"]
+        read_only_fields = ["id", "buffer_geom", "created_at", "distance"]
+
+    def get_distance(self, obj):
+        if hasattr(obj, "distance") and obj.distance is not None:
+            if hasattr(obj.distance, "m"):
+                return round(float(obj.distance.m), 1)
+            try:
+                return round(float(obj.distance), 1)
+            except (TypeError, ValueError):
+                pass
+        return None
 
 
 class SafetyPinCreateSerializer(serializers.Serializer):

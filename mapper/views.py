@@ -1,26 +1,22 @@
+import uuid
 from django.contrib.gis.geos import Point, Polygon
 from django.contrib.gis.db.models.functions import Distance, GeometryDistance
 from django.db import connection as db_connection
+from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CityBoundary, SafetyPin
+from .models import City, HazardPin
 from .serializers import (
     BoundingBoxQuerySerializer,
-    CityBoundaryGeoSerializer,
+    CityGeoSerializer,
+    HazardPinCreateSerializer,
+    HazardPinGeoSerializer,
     ProximityQuerySerializer,
-    SafetyPinCreateSerializer,
-    SafetyPinGeoSerializer,
 )
-
-def _apply_category_filter(queryset, request):
-    category = request.query_params.get("category", "").upper()
-    if category in (SafetyPin.CATEGORY_PEACEFUL, SafetyPin.CATEGORY_VIOLENT):
-        queryset = queryset.filter(category=category)
-    return queryset
 
 
 def _apply_bbox_filter(queryset, request):
@@ -38,52 +34,110 @@ def _apply_bbox_filter(queryset, request):
     queryset = queryset.filter(geom__within=bbox_poly)
     return queryset, None
 
-class SafetyPinListCreateView(APIView):
+
+def _extract_owner_token(request):
+    token_str = request.headers.get("X-Owner-Token") or request.query_params.get("owner_token")
+    if not token_str:
+        return None
+    try:
+        return uuid.UUID(str(token_str).strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+class HazardPinListCreateView(APIView):
     def get(self, request):
-        qs = SafetyPin.objects.all()
+        if "category" in request.query_params:
+            return Response(
+                {"error": "Category parameter is no longer supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Category filter
-        qs = _apply_category_filter(qs, request)
+        qs = HazardPin.objects.filter(expires_at__gt=timezone.now()).order_by("-created_at")
 
-        # Bounding-box filter
         qs, err = _apply_bbox_filter(qs, request)
         if err:
             return err
 
-        serializer = SafetyPinGeoSerializer(qs, many=True)
+        serializer = HazardPinGeoSerializer(qs, many=True)
         return Response(serializer.data)
 
     def post(self, request):
-        serializer = SafetyPinCreateSerializer(data=request.data)
+        serializer = HazardPinCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         pin = serializer.save()
-        out = SafetyPinGeoSerializer(pin)
+        out = HazardPinGeoSerializer(pin)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
-class SafetyPinDetailView(APIView):
+
+class HazardPinDetailView(APIView):
     def _get_pin(self, pk):
         try:
-            return SafetyPin.objects.get(pk=pk)
-        except SafetyPin.DoesNotExist:
+            pin = HazardPin.objects.get(pk=pk)
+            if pin.expires_at <= timezone.now():
+                return None
+            return pin
+        except HazardPin.DoesNotExist:
             return None
 
     def get(self, request, pk):
         pin = self._get_pin(pk)
         if pin is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(SafetyPinGeoSerializer(pin).data)
+        return Response(HazardPinGeoSerializer(pin).data)
+
+    def patch(self, request, pk):
+        pin = self._get_pin(pk)
+        if pin is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        token = _extract_owner_token(request)
+        if token is None or pin.owner_token != token:
+            return Response(
+                {"detail": "You do not have permission to modify this pin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        allowed_fields = {"description"}
+        extra_fields = set(request.data.keys()) - allowed_fields
+        if extra_fields:
+            return Response(
+                {"detail": f"Only 'description' may be updated. Disallowed fields: {list(extra_fields)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if "description" in request.data:
+            pin.description = request.data["description"]
+            pin.save(update_fields=["description", "updated_at"])
+
+        return Response(HazardPinGeoSerializer(pin).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):
         pin = self._get_pin(pk)
         if pin is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        token = _extract_owner_token(request)
+        if token is None or pin.owner_token != token:
+            return Response(
+                {"detail": "You do not have permission to delete this pin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         pin.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 @api_view(["GET"])
 def pins_nearest(request):
+    if "category" in request.query_params:
+        return Response(
+            {"error": "Category parameter is no longer supported."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     params = ProximityQuerySerializer(data=request.query_params)
     if not params.is_valid():
         return Response(params.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -91,14 +145,13 @@ def pins_nearest(request):
     data = params.validated_data
     center = Point(data["lon"], data["lat"], srid=4326)
 
-    qs = SafetyPin.objects.all()
-    qs = _apply_category_filter(qs, request)
+    qs = HazardPin.objects.filter(expires_at__gt=timezone.now())
     qs = (
         qs.annotate(distance=Distance("geom", center))
         .order_by(GeometryDistance("geom", center))[: data["limit"]]
     )
 
-    out = SafetyPinGeoSerializer(qs, many=True)
+    out = HazardPinGeoSerializer(qs, many=True)
     return Response(
         {
             "center": {"latitude": data["lat"], "longitude": data["lon"]},
@@ -108,8 +161,15 @@ def pins_nearest(request):
         }
     )
 
+
 @api_view(["GET"])
 def pins_within(request):
+    if "category" in request.query_params:
+        return Response(
+            {"error": "Category parameter is no longer supported."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     params = ProximityQuerySerializer(data=request.query_params)
     if not params.is_valid():
         return Response(params.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -117,33 +177,29 @@ def pins_within(request):
     data = params.validated_data
     center = Point(data["lon"], data["lat"], srid=4326)
 
-    qs = SafetyPin.objects.all()
-    qs = _apply_category_filter(qs, request)
-
-    # geom__dwithin on SRID 4326 PointField expects degrees, not metres.
-    # Use a raw ST_DWithin(geom::geography, ..., radius_m) for accurate metre lookup
-    # then filter the ORM queryset by the returned PKs.
+    # Cast to geography for accurate spherical distance in true meters on EPSG:4326
     with db_connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id FROM mapper_safetypin
-            WHERE ST_DWithin(
-                geom::geography,
-                ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                %s
-            )
+            SELECT id FROM mapper_hazardpin
+            WHERE expires_at > %s
+              AND ST_DWithin(
+                  geom::geography,
+                  ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                  %s
+              )
             """,
-            [data["lon"], data["lat"], data["radius_m"]],
+            [timezone.now(), data["lon"], data["lat"], data["radius_m"]],
         )
         pin_ids = [row[0] for row in cursor.fetchall()]
 
     qs = (
-        qs.filter(pk__in=pin_ids)
+        HazardPin.objects.filter(pk__in=pin_ids, expires_at__gt=timezone.now())
         .annotate(distance=Distance("geom", center))
         .order_by("distance")
     )
 
-    out = SafetyPinGeoSerializer(qs, many=True)
+    out = HazardPinGeoSerializer(qs, many=True)
     return Response(
         {
             "center": {"latitude": data["lat"], "longitude": data["lon"]},
@@ -153,13 +209,9 @@ def pins_within(request):
         }
     )
 
-class CityBoundaryListView(APIView):
-    """
-    GET /api/v1/boundaries/
-    Returns a GeoJSON FeatureCollection of all registered city boundaries.
-    """
 
+class CityListView(APIView):
     def get(self, request):
-        qs = CityBoundary.objects.all()
-        serializer = CityBoundaryGeoSerializer(qs, many=True)
+        qs = City.objects.all()
+        serializer = CityGeoSerializer(qs, many=True)
         return Response(serializer.data)

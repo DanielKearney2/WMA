@@ -1,26 +1,43 @@
+import uuid
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
 from django.contrib.gis.geos import Point
+from django.db import connection, transaction
+from django.utils import timezone
 
-from .models import CityBoundary, SafetyPin
+from .models import City, HazardPin
 
-class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
+
+class CityGeoSerializer(GeoFeatureModelSerializer):
+    class Meta:
+        model = City
+        geo_field = "geom"
+        fields = ["id", "code", "name"]
+        read_only_fields = ["id", "code", "name"]
+
+
+class HazardPinGeoSerializer(GeoFeatureModelSerializer):
     distance = serializers.SerializerMethodField(required=False)
 
     class Meta:
-        model = SafetyPin
+        model = HazardPin
         geo_field = "geom"
         fields = [
             "id",
-            "title",
             "description",
-            "category",
             "buffer_geom",
             "created_at",
+            "expires_at",
             "distance",
         ]
-        read_only_fields = ["id", "buffer_geom", "created_at", "distance"]
+        read_only_fields = [
+            "id",
+            "buffer_geom",
+            "created_at",
+            "expires_at",
+            "distance",
+        ]
 
     def get_distance(self, obj):
         if hasattr(obj, "distance") and obj.distance is not None:
@@ -33,17 +50,16 @@ class SafetyPinGeoSerializer(GeoFeatureModelSerializer):
         return None
 
 
-class SafetyPinCreateSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=200)
+class HazardPinCreateSerializer(serializers.Serializer):
     description = serializers.CharField(
-        allow_blank=True, required=False, default=""
-    )
-    category = serializers.ChoiceField(
-        choices=SafetyPin.CATEGORY_CHOICES,
-        default=SafetyPin.CATEGORY_PEACEFUL,
+        allow_blank=True,
+        required=False,
+        allow_null=True,
+        default="",
     )
     latitude = serializers.FloatField()
     longitude = serializers.FloatField()
+    owner_token = serializers.UUIDField()
 
     def validate_latitude(self, value):
         if not -90 <= value <= 90:
@@ -61,29 +77,55 @@ class SafetyPinCreateSerializer(serializers.Serializer):
 
     def validate(self, data):
         point = Point(data["longitude"], data["latitude"], srid=4326)
-        if not CityBoundary.objects.filter(geom__contains=point).exists():
+
+        # Pin must be inside the Paris City boundary
+        paris_qs = City.objects.filter(code="paris", geom__contains=point)
+        city_qs = City.objects.filter(geom__contains=point)
+        if not paris_qs.exists() and not city_qs.exists():
             raise serializers.ValidationError(
-                "The pin location is outside all registered city boundaries. "
-                "Only pins inside a tracked city are accepted."
+                "The pin location is outside the Paris boundary. "
+                "Only pins inside Paris are accepted."
             )
+
+        # No-stacking: no other active pin within 100 m
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id FROM mapper_hazardpin
+                WHERE expires_at > %s
+                  AND ST_DWithin(
+                      geom::geography,
+                      ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                      100
+                  )
+                LIMIT 1
+                """,
+                [timezone.now(), data["longitude"], data["latitude"]],
+            )
+            if cursor.fetchone():
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "Another active incident already exists within 100 m of this location."
+                        ]
+                    }
+                )
+
         return data
 
     def create(self, validated_data):
-        point = Point(
-            validated_data.pop("longitude"),
-            validated_data.pop("latitude"),
-            srid=4326,
-        )
-        pin = SafetyPin(geom=point, **validated_data)
-        pin.save()  # triggers calculate_buffer() in model.save()
-        return pin
+        with transaction.atomic():
+            # Lock the City row to prevent concurrent race condition on stacking check
+            City.objects.select_for_update().filter(code="paris").first()
 
-class CityBoundaryGeoSerializer(GeoFeatureModelSerializer):
-    class Meta:
-        model = CityBoundary
-        geo_field = "geom"
-        fields = ["id", "name", "created_at"]
-        read_only_fields = ["id", "created_at"]
+            point = Point(
+                validated_data.pop("longitude"),
+                validated_data.pop("latitude"),
+                srid=4326,
+            )
+            pin = HazardPin.objects.create(geom=point, **validated_data)
+            return pin
+
 
 class ProximityQuerySerializer(serializers.Serializer):
     lat = serializers.FloatField()
@@ -91,7 +133,9 @@ class ProximityQuerySerializer(serializers.Serializer):
     radius_m = serializers.FloatField(
         min_value=1, max_value=100_000, required=False, default=500
     )
-    limit = serializers.IntegerField(min_value=1, max_value=100, required=False, default=10)
+    limit = serializers.IntegerField(
+        min_value=1, max_value=100, required=False, default=10
+    )
 
     def validate_lat(self, value):
         if not -90 <= value <= 90:
@@ -125,4 +169,4 @@ class BoundingBoxQuerySerializer(serializers.Serializer):
             raise serializers.ValidationError("min_lon must be less than max_lon.")
         if min_lat >= max_lat:
             raise serializers.ValidationError("min_lat must be less than max_lat.")
-        return parts  # return as list for easy unpacking in the view
+        return parts

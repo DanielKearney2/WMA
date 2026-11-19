@@ -4,47 +4,36 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Urban Safety &amp; Protest Mapper — Paris / Dublin</title>
+  <title>Hazard Avoidance &amp; Reporting Mapper — Paris</title>
 
-  <!-- Bootstrap 5 CSS -->
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
     crossorigin="anonymous"
   >
-
-  <!-- Bootstrap Icons -->
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
   >
-
-  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     crossorigin=""
   >
-
-  <!-- Custom styles -->
   <link rel="stylesheet" href="{% static 'web/css/map.css' %}">
 </head>
 <body>
 
-  <!-- ===== Full-Screen Map ===== -->
-  <div id="map"></div>
+  <div id="map" style="width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1;"></div>
 
-  <!-- ===== Spatial Query Toolbar (top-left) ===== -->
   <div id="map-toolbar" class="card shadow-sm border-0">
     <div class="card-body p-2">
-      <!-- Main Bar: Modes, City Jumps, Category Filter, Boundaries, Reset -->
       <div class="d-flex align-items-center gap-2 flex-wrap">
         
-        <!-- Interaction Modes -->
         <div class="btn-group btn-group-sm" role="group" aria-label="Map Interaction Modes">
           <input type="radio" class="btn-check" name="map-mode" id="mode-drop" value="drop" autocomplete="off" checked>
-          <label class="btn btn-outline-primary" for="mode-drop" title="Click map to drop incident pin">
-            <i class="bi bi-pin-map-fill me-1"></i>Drop Pin
+          <label class="btn btn-outline-primary" for="mode-drop" title="Click map to report hazard pin">
+            <i class="bi bi-pin-map-fill me-1"></i>Report Hazard
           </label>
 
           <input type="radio" class="btn-check" name="map-mode" id="mode-nearest" value="nearest" autocomplete="off">
@@ -60,52 +49,29 @@
 
         <div class="vr d-none d-sm-block"></div>
 
-        <!-- Quick Jump to Cities -->
-        <div class="btn-group btn-group-sm" role="group" aria-label="City Views">
-          <button type="button" class="btn btn-outline-secondary" id="btn-jump-dublin" title="Fly to Dublin">
-            Dublin
-          </button>
-          <button type="button" class="btn btn-outline-secondary" id="btn-jump-paris" title="Fly to Paris">
-            Paris
-          </button>
-        </div>
+        <div class="btn-group btn-group-sm" id="city-jump-buttons" role="group" aria-label="City Views"></div>
 
         <div class="vr d-none d-md-block"></div>
 
-        <!-- Category Filter -->
-        <div class="d-flex align-items-center gap-1">
-          <label for="filter-category" class="small text-muted mb-0 d-none d-lg-inline">Category:</label>
-          <select id="filter-category" class="form-select form-select-sm" style="width: auto;">
-            <option value="">All Categories</option>
-            <option value="PEACEFUL">Peaceful Only</option>
-            <option value="VIOLENT">Violent Only</option>
-          </select>
-        </div>
-
-        <!-- Boundaries Toggle Switch -->
-        <div class="form-check form-switch d-flex align-items-center mb-0 ms-1" title="Toggle PostGIS city boundary polygon overlay">
+        <div class="form-check form-switch d-flex align-items-center mb-0 ms-1" title="Toggle city boundary overlay">
           <input class="form-check-input mt-0" type="checkbox" role="switch" id="toggle-boundaries" checked>
-          <label class="form-check-label small ms-1 text-nowrap" for="toggle-boundaries">Boundaries</label>
+          <label class="form-check-label small ms-1 text-nowrap" for="toggle-boundaries">City boundary</label>
         </div>
 
-        <!-- Clear / Reset Query Button -->
-        <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-clear-query" title="Clear spatial query and restore all pins">
+        <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-clear-query" title="Clear spatial query">
           <i class="bi bi-arrow-counterclockwise me-1"></i>Reset
         </button>
       </div>
 
-      <!-- Mode Subpanels / Parameter Controls -->
       <div id="toolbar-subpanel" class="mt-2 pt-1 border-top">
-        <!-- Drop Mode Note -->
         <div id="subpanel-drop" class="small text-muted d-flex align-items-center">
           <i class="bi bi-info-circle text-primary me-1"></i>
-          <span>Click anywhere within the Dublin or Paris boundary to drop a safety pin (validated by <code class="text-dark">ST_Contains</code>).</span>
+          <span>Click anywhere within the Paris boundary to report a hazard.</span>
         </div>
 
-        <!-- Nearest Mode Controls -->
         <div id="subpanel-nearest" class="d-none small text-muted d-flex align-items-center gap-2 flex-wrap">
           <i class="bi bi-crosshair text-primary me-1"></i>
-          <span>Click on the map or an existing pin to find closest pins via PostGIS <code class="text-dark">ST_Distance</code>.</span>
+          <span>Click on the map or an existing pin to find closest hazards via PostGIS <code class="text-dark">ST_Distance</code>.</span>
           <div class="d-inline-flex align-items-center ms-auto gap-1">
             <label for="nearest-limit" class="fw-semibold text-nowrap mb-0">Limit:</label>
             <select id="nearest-limit" class="form-select form-select-sm py-0 ps-2 pe-4" style="width: auto; height: 26px;">
@@ -116,7 +82,6 @@
           </div>
         </div>
 
-        <!-- Radius Mode Controls -->
         <div id="subpanel-radius" class="d-none small text-muted d-flex align-items-center gap-2 flex-wrap">
           <i class="bi bi-record-circle text-primary me-1"></i>
           <span>Click on the map or an existing pin to search within radius using PostGIS <code class="text-dark">ST_DWithin</code>.</span>
@@ -130,7 +95,6 @@
     </div>
   </div>
 
-  <!-- ===== Query Results Panel (floating left) ===== -->
   <div id="query-results-panel" class="card shadow-lg border-0 d-none">
     <div class="card-header bg-primary text-white py-2 px-3 d-flex justify-content-between align-items-center">
       <span class="fw-semibold small" id="results-title">
@@ -144,18 +108,13 @@
     </div>
   </div>
 
-  <!-- ===== Legend (bottom-right, above Leaflet attribution) ===== -->
   <div id="legend" class="leaflet-control">
     <h6 class="mb-2 fw-semibold">
       <i class="bi bi-layers-fill me-1"></i>Legend
     </h6>
     <div class="legend-item">
-      <span class="legend-swatch peaceful-swatch"></span>
-      <span>Peaceful Protest</span>
-    </div>
-    <div class="legend-item mt-1">
-      <span class="legend-swatch violent-swatch"></span>
-      <span>Violent Incident</span>
+      <span class="legend-swatch hazard-swatch"></span>
+      <span>Hazard Pin</span>
     </div>
     <div class="legend-item mt-1">
       <span class="legend-swatch boundary-swatch"></span>
@@ -172,13 +131,11 @@
     </div>
   </div>
 
-  <!-- ===== Pin-Count Badge (top-right) ===== -->
   <div id="pin-count-badge" class="badge bg-dark bg-opacity-75 text-white px-3 py-2">
     <i class="bi bi-geo-alt-fill me-1"></i>
-    Pins: <span id="pin-count">0</span>
+    Active Hazards: <span id="pin-count">0</span>
   </div>
 
-  <!-- ===== Click-to-Drop Modal ===== -->
   <div
     class="modal fade"
     id="dropPinModal"
@@ -191,7 +148,7 @@
 
         <div class="modal-header">
           <h5 class="modal-title" id="dropPinModalLabel">
-            <i class="bi bi-geo-alt-fill me-2 text-primary"></i>Drop a Safety Pin
+            <i class="bi bi-exclamation-triangle-fill me-2 text-warning"></i>Report a Hazard
           </h5>
           <button
             type="button"
@@ -202,9 +159,7 @@
         </div>
 
         <div class="modal-body">
-
-          <!-- Coordinates display -->
-          <div class="alert alert-secondary d-flex align-items-center py-2 mb-3" role="alert">
+          <div class="alert alert-secondary d-flex align-items-center py-2 mb-2" role="alert">
             <i class="bi bi-crosshair me-2"></i>
             <small>
               Lat: <strong id="modal-lat">—</strong>
@@ -213,116 +168,63 @@
             </small>
           </div>
 
+          <div class="alert alert-info py-1 px-2 mb-3 small d-flex align-items-center" role="alert">
+            <i class="bi bi-clock-history me-2"></i>
+            <span>Incident expires in 90 minutes.</span>
+          </div>
+
           <form id="drop-pin-form" novalidate>
             {% csrf_token %}
-
-            <!-- Category -->
             <div class="mb-3">
-              <label class="form-label fw-semibold">Category <span class="text-danger">*</span></label>
-              <div class="d-flex gap-3">
-                <div class="form-check form-check-inline flex-fill">
-                  <input
-                    class="form-check-input"
-                    type="radio"
-                    name="category"
-                    id="cat-peaceful"
-                    value="PEACEFUL"
-                    required
-                    checked
-                  >
-                  <label class="form-check-label" for="cat-peaceful">
-                    <span class="badge rounded-pill text-bg-primary">
-                      <i class="bi bi-peace me-1"></i>Peaceful
-                    </span>
-                  </label>
-                </div>
-                <div class="form-check form-check-inline flex-fill">
-                  <input
-                    class="form-check-input"
-                    type="radio"
-                    name="category"
-                    id="cat-violent"
-                    value="VIOLENT"
-                    required
-                  >
-                  <label class="form-check-label" for="cat-violent">
-                    <span class="badge rounded-pill text-bg-danger">
-                      <i class="bi bi-exclamation-triangle-fill me-1"></i>Violent
-                    </span>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            <!-- Title -->
-            <div class="mb-3">
-              <label for="pin-title" class="form-label fw-semibold">
-                Title <span class="text-danger">*</span>
-              </label>
-              <input
-                type="text"
-                class="form-control"
-                id="pin-title"
-                name="title"
-                maxlength="200"
-                placeholder="e.g. Peaceful March on O'Connell St"
-                required
-              >
-              <div class="invalid-feedback">Please enter a title.</div>
-            </div>
-
-            <!-- Description -->
-            <div class="mb-3">
-              <label for="pin-description" class="form-label fw-semibold">Description</label>
+              <label for="pin-description" class="form-label fw-semibold">Description (optional)</label>
               <textarea
                 class="form-control"
                 id="pin-description"
                 name="description"
                 rows="3"
-                placeholder="Brief description of the incident or event…"
+                placeholder="Brief description of the hazard or incident…"
               ></textarea>
             </div>
-
-            <!-- API error / info -->
             <div id="form-alert" class="alert d-none" role="alert"></div>
           </form>
-
         </div>
 
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
             <i class="bi bi-x-circle me-1"></i>Cancel
           </button>
-          <button type="button" class="btn btn-primary" id="submit-pin-btn">
+          <button type="button" class="btn btn-danger" id="submit-pin-btn">
             <span
               id="submit-spinner"
               class="spinner-border spinner-border-sm me-1 d-none"
               role="status"
               aria-hidden="true"
             ></span>
-            <i class="bi bi-pin-map-fill me-1" id="submit-icon"></i>Drop Pin
+            <i class="bi bi-send-fill me-1" id="submit-icon"></i>Report
           </button>
         </div>
 
       </div>
     </div>
   </div>
-  <!-- /Modal -->
 
-  <!-- ===== Scripts ===== -->
-  <!-- Bootstrap 5 JS (bundle includes Popper) -->
+  <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" style="z-index: 1200;">
+    <div id="app-toast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="toast-message"></div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
   <script
     src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
     crossorigin="anonymous"
   ></script>
-
-  <!-- Leaflet JS -->
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     crossorigin=""
   ></script>
-
-  <!-- Map logic -->
   <script src="{% static 'web/js/map.js' %}"></script>
 </body>
 </html>

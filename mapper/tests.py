@@ -1,27 +1,31 @@
+from datetime import timedelta
+import uuid
+
 from django.contrib.gis.geos import Point, Polygon
 from django.test import TestCase
-from django.urls import reverse
+from django.utils import timezone
 
 from rest_framework.test import APIClient
 
-from mapper.models import CityBoundary, SafetyPin
+from mapper.models import City, HazardPin
 
-DUBLIN_BBOX = (-6.3000, 53.3000, -6.2000, 53.4000)
-PARIS_BBOX  = (2.25, 48.81, 2.42, 48.90)
-
-DUBLIN_CENTER = (-6.2603, 53.3498)   # O'Connell St – inside Dublin bbox
-PARIS_CENTER  = (2.3522, 48.8566)    # Notre-Dame   – inside Paris bbox
+PARIS_BBOX = (2.25, 48.81, 2.42, 48.91)
+PARIS_CENTER = (2.3522, 48.8566)
+OUTSIDE_POINT = (-30.0, 40.0)
 
 
 def make_poly(bbox):
     min_lon, min_lat, max_lon, max_lat = bbox
-    return Polygon((
-        (min_lon, min_lat),
-        (max_lon, min_lat),
-        (max_lon, max_lat),
-        (min_lon, max_lat),
-        (min_lon, min_lat),
-    ), srid=4326)
+    return Polygon(
+        (
+            (min_lon, min_lat),
+            (max_lon, min_lat),
+            (max_lon, max_lat),
+            (min_lon, max_lat),
+            (min_lon, min_lat),
+        ),
+        srid=4326,
+    )
 
 
 class BaseAPITest(TestCase):
@@ -29,31 +33,21 @@ class BaseAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
 
-        self.dublin = CityBoundary.objects.create(
-            name="Dublin", geom=make_poly(DUBLIN_BBOX)
-        )
-        self.paris = CityBoundary.objects.create(
-            name="Paris", geom=make_poly(PARIS_BBOX)
+        self.paris = City.objects.create(
+            code="paris",
+            name="Paris",
+            geom=make_poly(PARIS_BBOX),
         )
 
-        self.pin_dublin_peaceful = SafetyPin.objects.create(
-            title="Dublin March",
-            description="Peaceful rally",
-            category=SafetyPin.CATEGORY_PEACEFUL,
-            geom=Point(*DUBLIN_CENTER, srid=4326),
-        )
-        self.pin_dublin_violent = SafetyPin.objects.create(
-            title="Dublin Riot",
-            description="Violent incident",
-            category=SafetyPin.CATEGORY_VIOLENT,
-            geom=Point(-6.2610, 53.3500, srid=4326),
-        )
-        self.pin_paris = SafetyPin.objects.create(
-            title="Paris Demo",
-            description="Paris protest",
-            category=SafetyPin.CATEGORY_PEACEFUL,
+        self.owner_token = uuid.uuid4()
+        self.other_token = uuid.uuid4()
+
+        self.pin_paris = HazardPin.objects.create(
+            description="Incident near Notre-Dame",
             geom=Point(*PARIS_CENTER, srid=4326),
+            owner_token=self.owner_token,
         )
+
 
 class PinListCreateTest(BaseAPITest):
     url = "/api/v1/pins/"
@@ -63,86 +57,103 @@ class PinListCreateTest(BaseAPITest):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["type"], "FeatureCollection")
-        self.assertEqual(len(data["features"]), 3)
+        self.assertEqual(len(data["features"]), 1)
 
-    def test_list_category_filter_peaceful(self):
-        resp = self.client.get(self.url, {"category": "PEACEFUL"})
-        self.assertEqual(resp.status_code, 200)
-        features = resp.json()["features"]
-        categories = [f["properties"]["category"] for f in features]
-        self.assertTrue(all(c == "PEACEFUL" for c in categories))
-        self.assertEqual(len(features), 2)
-
-    def test_list_category_filter_violent(self):
+    def test_list_rejects_category_filter_with_400(self):
         resp = self.client.get(self.url, {"category": "VIOLENT"})
-        self.assertEqual(resp.status_code, 200)
-        features = resp.json()["features"]
-        self.assertEqual(len(features), 1)
-        self.assertEqual(features[0]["properties"]["category"], "VIOLENT")
+        self.assertEqual(resp.status_code, 400)
 
-    def test_list_bbox_filter_dublin_only(self):
-        bbox = f"{DUBLIN_BBOX[0]},{DUBLIN_BBOX[1]},{DUBLIN_BBOX[2]},{DUBLIN_BBOX[3]}"
-        resp = self.client.get(self.url, {"bbox": bbox})
-        self.assertEqual(resp.status_code, 200)
-        features = resp.json()["features"]
-        self.assertEqual(len(features), 2)
-
-    def test_list_bbox_filter_paris_only(self):
+    def test_list_bbox_filter_paris(self):
         bbox = f"{PARIS_BBOX[0]},{PARIS_BBOX[1]},{PARIS_BBOX[2]},{PARIS_BBOX[3]}"
         resp = self.client.get(self.url, {"bbox": bbox})
         self.assertEqual(resp.status_code, 200)
         features = resp.json()["features"]
         self.assertEqual(len(features), 1)
 
-    def test_list_bbox_filter_combined_with_category(self):
-        bbox = f"{DUBLIN_BBOX[0]},{DUBLIN_BBOX[1]},{DUBLIN_BBOX[2]},{DUBLIN_BBOX[3]}"
-        resp = self.client.get(self.url, {"bbox": bbox, "category": "VIOLENT"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.json()["features"]), 1)
-
     def test_list_invalid_bbox_returns_400(self):
         resp = self.client.get(self.url, {"bbox": "bad,data"})
         self.assertEqual(resp.status_code, 400)
 
     def test_create_pin_inside_city(self):
+        token = uuid.uuid4()
         payload = {
-            "title": "Trinity College Pin",
-            "description": "Near Trinity",
-            "category": "PEACEFUL",
-            "latitude": 53.3438,
-            "longitude": -6.2546,
+            "description": "Hazard on Boulevard Saint-Germain",
+            "latitude": 48.8530,
+            "longitude": 2.3400,
+            "owner_token": str(token),
         }
         resp = self.client.post(self.url, payload, format="json")
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
         self.assertEqual(data["type"], "Feature")
-        self.assertIsNotNone(data["properties"]["buffer_geom"])
-        self.assertEqual(data["properties"]["category"], "PEACEFUL")
+        self.assertIn("buffer_geom", data["properties"])
+        self.assertEqual(
+            data["properties"]["description"], "Hazard on Boulevard Saint-Germain"
+        )
+        self.assertIn("expires_at", data["properties"])
 
     def test_create_pin_outside_city_rejected(self):
-        """Point in the middle of the Atlantic – outside all city boundaries."""
         payload = {
-            "title": "Ocean Pin",
-            "category": "VIOLENT",
-            "latitude": 40.0,
-            "longitude": -30.0,
+            "description": "Ocean Hazard",
+            "latitude": OUTSIDE_POINT[1],
+            "longitude": OUTSIDE_POINT[0],
+            "owner_token": str(uuid.uuid4()),
         }
         resp = self.client.post(self.url, payload, format="json")
         self.assertEqual(resp.status_code, 400)
 
-    def test_create_pin_invalid_lat_rejected(self):
+    def test_create_pin_missing_owner_token_rejected(self):
         payload = {
-            "title": "Bad coords",
-            "category": "PEACEFUL",
-            "latitude": 999,
-            "longitude": -6.2603,
+            "description": "Missing token",
+            "latitude": 48.8530,
+            "longitude": 2.3400,
         }
         resp = self.client.post(self.url, payload, format="json")
         self.assertEqual(resp.status_code, 400)
 
-    def test_create_pin_missing_fields_rejected(self):
-        resp = self.client.post(self.url, {"title": "Incomplete"}, format="json")
+    def test_create_pin_with_non_uuid_owner_token_rejected(self):
+        payload = {
+            "description": "Bad token",
+            "latitude": 48.8530,
+            "longitude": 2.3400,
+            "owner_token": "not-a-valid-uuid",
+        }
+        resp = self.client.post(self.url, payload, format="json")
         self.assertEqual(resp.status_code, 400)
+
+    def test_create_pin_stacked_within_100m_rejected(self):
+        # 50m north of PARIS_CENTER (~0.00045 deg lat) is <100m away
+        payload = {
+            "description": "Stacked pin",
+            "latitude": PARIS_CENTER[1] + 0.00045,
+            "longitude": PARIS_CENTER[0],
+            "owner_token": str(uuid.uuid4()),
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertIn("non_field_errors", data)
+        self.assertIn("within 100 m", data["non_field_errors"][0])
+
+    def test_create_pin_150m_apart_allowed(self):
+        # 150m north of PARIS_CENTER (~0.00135 deg lat) is >100m away
+        payload = {
+            "description": "Pin 150m away",
+            "latitude": PARIS_CENTER[1] + 0.00135,
+            "longitude": PARIS_CENTER[0],
+            "owner_token": str(uuid.uuid4()),
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 201)
+
+    def test_owner_token_never_serialised(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        feature = data["features"][0]
+        self.assertNotIn("owner_token", feature["properties"])
+        self.assertNotIn("owner_token", feature)
+
 
 class PinDetailTest(BaseAPITest):
 
@@ -150,127 +161,190 @@ class PinDetailTest(BaseAPITest):
         return f"/api/v1/pins/{pk}/"
 
     def test_retrieve_existing_pin(self):
-        resp = self.client.get(self._url(self.pin_dublin_peaceful.pk))
+        resp = self.client.get(self._url(self.pin_paris.pk))
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["type"], "Feature")
-        self.assertEqual(data["properties"]["title"], "Dublin March")
+        self.assertEqual(data["properties"]["description"], "Incident near Notre-Dame")
+        self.assertNotIn("owner_token", data["properties"])
 
     def test_retrieve_nonexistent_pin_returns_404(self):
         resp = self.client.get(self._url(99999))
         self.assertEqual(resp.status_code, 404)
 
-    def test_delete_pin(self):
-        pk = self.pin_paris.pk
-        resp = self.client.delete(self._url(pk))
-        self.assertEqual(resp.status_code, 204)
-        self.assertFalse(SafetyPin.objects.filter(pk=pk).exists())
+    def test_delete_pin_without_token_403(self):
+        resp = self.client.delete(self._url(self.pin_paris.pk))
+        self.assertEqual(resp.status_code, 403)
 
-    def test_delete_nonexistent_pin_returns_404(self):
-        resp = self.client.delete(self._url(99999))
+    def test_delete_pin_with_wrong_token_403(self):
+        resp = self.client.delete(
+            self._url(self.pin_paris.pk),
+            HTTP_X_OWNER_TOKEN=str(self.other_token),
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_delete_pin_with_matching_token_204(self):
+        pk = self.pin_paris.pk
+        resp = self.client.delete(
+            self._url(pk),
+            HTTP_X_OWNER_TOKEN=str(self.owner_token),
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(HazardPin.objects.filter(pk=pk).exists())
+
+    def test_patch_description_with_token_200(self):
+        pk = self.pin_paris.pk
+        resp = self.client.patch(
+            self._url(pk),
+            {"description": "Updated incident description"},
+            format="json",
+            HTTP_X_OWNER_TOKEN=str(self.owner_token),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(
+            data["properties"]["description"], "Updated incident description"
+        )
+        self.pin_paris.refresh_from_db()
+        self.assertEqual(self.pin_paris.description, "Updated incident description")
+
+    def test_patch_other_field_with_token_400(self):
+        pk = self.pin_paris.pk
+        resp = self.client.patch(
+            self._url(pk),
+            {"latitude": 48.8600},
+            format="json",
+            HTTP_X_OWNER_TOKEN=str(self.owner_token),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+class PinExpiryTest(BaseAPITest):
+
+    def test_expired_pin_not_returned_by_list(self):
+        HazardPin.objects.create(
+            description="Old expired hazard",
+            geom=Point(2.3600, 48.8600, srid=4326),
+            owner_token=uuid.uuid4(),
+            expires_at=timezone.now() - timedelta(minutes=10),
+        )
+        resp = self.client.get("/api/v1/pins/")
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        descriptions = [f["properties"]["description"] for f in features]
+        self.assertNotIn("Old expired hazard", descriptions)
+        self.assertEqual(len(features), 1)
+
+    def test_expired_pin_returns_404_on_detail(self):
+        expired_pin = HazardPin.objects.create(
+            description="Expired detail hazard",
+            geom=Point(2.3600, 48.8600, srid=4326),
+            owner_token=uuid.uuid4(),
+            expires_at=timezone.now() - timedelta(minutes=5),
+        )
+        resp = self.client.get(f"/api/v1/pins/{expired_pin.pk}/")
         self.assertEqual(resp.status_code, 404)
 
-class PinNearestTest(BaseAPITest):
 
+class PinNearestTest(BaseAPITest):
     url = "/api/v1/pins/nearest/"
 
     def test_nearest_returns_closest_first(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "limit": 2
-        })
+        resp = self.client.get(
+            self.url,
+            {"lat": PARIS_CENTER[1], "lon": PARIS_CENTER[0], "limit": 2},
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("features", data)
         self.assertLessEqual(len(data["features"]), 2)
-        # First result should be the Dublin peaceful pin (same point)
         self.assertEqual(
-            data["features"][0]["properties"]["title"], "Dublin March"
+            data["features"][0]["properties"]["description"],
+            "Incident near Notre-Dame",
         )
         self.assertIn("distance", data["features"][0]["properties"])
         self.assertEqual(data["features"][0]["properties"]["distance"], 0.0)
 
-    def test_nearest_with_category_filter(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0],
-            "limit": 3, "category": "VIOLENT"
-        })
-        self.assertEqual(resp.status_code, 200)
-        features = resp.json()["features"]
-        self.assertTrue(all(
-            f["properties"]["category"] == "VIOLENT" for f in features
-        ))
+    def test_nearest_category_parameter_rejected_with_400(self):
+        resp = self.client.get(
+            self.url,
+            {
+                "lat": PARIS_CENTER[1],
+                "lon": PARIS_CENTER[0],
+                "limit": 3,
+                "category": "VIOLENT",
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
 
     def test_nearest_missing_params_returns_400(self):
-        resp = self.client.get(self.url, {"lat": 53.35})
+        resp = self.client.get(self.url, {"lat": 48.8566})
         self.assertEqual(resp.status_code, 400)
 
     def test_nearest_invalid_lat_returns_400(self):
-        resp = self.client.get(self.url, {"lat": 999, "lon": -6.26})
+        resp = self.client.get(self.url, {"lat": 999, "lon": 2.35})
         self.assertEqual(resp.status_code, 400)
 
-class PinWithinTest(BaseAPITest):
 
+class PinWithinTest(BaseAPITest):
     url = "/api/v1/pins/within/"
 
-    def test_within_large_radius_returns_both_dublin_pins(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 1000
-        })
+    def test_within_radius_returns_pins(self):
+        resp = self.client.get(
+            self.url,
+            {"lat": PARIS_CENTER[1], "lon": PARIS_CENTER[0], "radius_m": 1000},
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["count"], 1)
         self.assertIn("distance", data["features"][0]["properties"])
 
-    def test_within_tiny_radius_returns_only_exact_pin(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 5
-        })
+    def test_within_tiny_radius_returns_exact_pin(self):
+        resp = self.client.get(
+            self.url,
+            {"lat": PARIS_CENTER[1], "lon": PARIS_CENTER[0], "radius_m": 5},
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["count"], 1)
 
-    def test_within_with_category_filter(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0],
-            "radius_m": 1000, "category": "PEACEFUL"
-        })
-        self.assertEqual(resp.status_code, 200)
-        features = resp.json()["features"]
-        self.assertTrue(all(
-            f["properties"]["category"] == "PEACEFUL" for f in features
-        ))
-
-    def test_within_excludes_paris_from_dublin_search(self):
-        resp = self.client.get(self.url, {
-            "lat": DUBLIN_CENTER[1], "lon": DUBLIN_CENTER[0], "radius_m": 5000
-        })
-        self.assertEqual(resp.status_code, 200)
-        titles = [f["properties"]["title"] for f in resp.json()["features"]]
-        self.assertNotIn("Paris Demo", titles)
+    def test_within_category_parameter_rejected_with_400(self):
+        resp = self.client.get(
+            self.url,
+            {
+                "lat": PARIS_CENTER[1],
+                "lon": PARIS_CENTER[0],
+                "radius_m": 1000,
+                "category": "PEACEFUL",
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
 
     def test_within_missing_params_returns_400(self):
-        resp = self.client.get(self.url, {"lat": 53.35})
+        resp = self.client.get(self.url, {"lat": 48.8566})
         self.assertEqual(resp.status_code, 400)
 
     def test_within_radius_too_large_returns_400(self):
-        resp = self.client.get(self.url, {
-            "lat": 53.35, "lon": -6.26, "radius_m": 999_999
-        })
+        resp = self.client.get(
+            self.url,
+            {"lat": 48.8566, "lon": 2.35, "radius_m": 999_999},
+        )
         self.assertEqual(resp.status_code, 400)
 
-class BoundaryListTest(BaseAPITest):
 
-    url = "/api/v1/boundaries/"
+class CityListTest(BaseAPITest):
+    url = "/api/v1/cities/"
 
     def test_list_returns_geojson_feature_collection(self):
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["type"], "FeatureCollection")
-        self.assertEqual(len(data["features"]), 2)
+        self.assertEqual(len(data["features"]), 1)
 
-    def test_boundary_features_contain_name(self):
+    def test_city_features_contain_code_and_name(self):
         resp = self.client.get(self.url)
-        names = {f["properties"]["name"] for f in resp.json()["features"]}
-        self.assertIn("Dublin", names)
-        self.assertIn("Paris", names)
+        features = resp.json()["features"]
+        feature = features[0]
+        self.assertEqual(feature["properties"]["code"], "paris")
+        self.assertEqual(feature["properties"]["name"], "Paris")

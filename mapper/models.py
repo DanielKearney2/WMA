@@ -1,66 +1,58 @@
-from django.db import models, connection
+from datetime import timedelta
+from django.db import models
 from django.contrib.gis.db import models as gis_models
-from django.contrib.gis.geos import GEOSGeometry
 from django.contrib.postgres.indexes import GistIndex
+from django.utils import timezone
 
 
-class CityBoundary(gis_models.Model):
-    """
-    City administrative boundary model (e.g. Paris or Dublin).
-    Stored as an SRID 4326 Polygon geometry.
-    """
+class City(gis_models.Model):
+    code = models.CharField(
+        max_length=32,
+        unique=True,
+        help_text="City code identifier (e.g. 'paris')",
+    )
     name = models.CharField(
         max_length=100,
         unique=True,
-        help_text="Name of the city (e.g. Paris, Dublin)",
+        help_text="Name of the city (e.g. 'Paris')",
     )
     geom = gis_models.PolygonField(
         srid=4326,
         help_text="City boundary polygon in EPSG:4326 coordinates",
     )
+    high_threshold = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Heatmap risk threshold",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "City Boundary"
-        verbose_name_plural = "City Boundaries"
+        verbose_name = "City"
+        verbose_name_plural = "Cities"
         ordering = ["name"]
         indexes = [
-            GistIndex(fields=["geom"], name="mapper_cityboundary_geom_gist"),
+            GistIndex(fields=["geom"], name="mapper_city_geom_gist"),
         ]
+
+    @property
+    def centroid(self):
+        return self.geom.centroid if self.geom else None
 
     def __str__(self):
         return self.name
 
 
-class SafetyPin(gis_models.Model):
-    """
-    User-dropped incident or protest pin with an automatic 100-meter impact buffer polygon.
-    Categories:
-      - PEACEFUL: Peaceful Protest / Safe Zone
-      - VIOLENT: Violent Incident / Danger Zone
-    """
-    CATEGORY_PEACEFUL = "PEACEFUL"
-    CATEGORY_VIOLENT = "VIOLENT"
+def default_pin_expiry():
+    return timezone.now() + timedelta(minutes=90)
 
-    CATEGORY_CHOICES = [
-        (CATEGORY_PEACEFUL, "Peaceful Protest / Safe Zone"),
-        (CATEGORY_VIOLENT, "Violent Incident / Danger Zone"),
-    ]
 
-    title = models.CharField(
-        max_length=200,
-        help_text="Title or brief label for the pin",
-    )
+class HazardPin(gis_models.Model):
     description = models.TextField(
         blank=True,
-        help_text="Detailed description of the incident or protest",
-    )
-    category = models.CharField(
-        max_length=20,
-        choices=CATEGORY_CHOICES,
-        default=CATEGORY_PEACEFUL,
-        help_text="Incident category",
+        null=True,
+        help_text="Optional description of the incident",
     )
     geom = gis_models.PointField(
         srid=4326,
@@ -70,59 +62,29 @@ class SafetyPin(gis_models.Model):
         srid=4326,
         null=True,
         blank=True,
-        help_text="100-meter PostGIS buffer polygon generated from geom",
+        help_text="100-meter buffer polygon generated from geom by database trigger",
+    )
+    owner_token = models.UUIDField(
+        help_text="Client-supplied ownership UUID token",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        default=default_pin_expiry,
+        help_text="Timestamp when the pin expires (default now() + 90 min)",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Safety Pin"
-        verbose_name_plural = "Safety Pins"
+        verbose_name = "Hazard Pin"
+        verbose_name_plural = "Hazard Pins"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["category", "-created_at"], name="mapper_pin_cat_created_idx"),
-            GistIndex(fields=["geom"], name="mapper_pin_geom_gist"),
-            GistIndex(fields=["buffer_geom"], name="mapper_pin_buffer_gist"),
+            GistIndex(fields=["geom"], name="mapper_hazardpin_geom_gist"),
+            GistIndex(fields=["buffer_geom"], name="mapper_hazardpin_buf_gist"),
+            models.Index(fields=["expires_at"], name="mapper_pin_expires_idx"),
+            models.Index(fields=["owner_token"], name="mapper_pin_owner_idx"),
         ]
 
-    def calculate_buffer(self):
-        """
-        Calculates a 100-meter PostGIS buffer polygon from the point geometry.
-        Casting to geography (geom::geography) ensures the buffer distance is
-        measured in true meters on the WGS84 spheroid before casting back to geometry.
-        """
-        if not self.geom:
-            return None
-
-        # Execute PostGIS ST_Buffer on geography type for an accurate 100-meter radius
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT ST_Buffer(ST_GeomFromText(%s, 4326)::geography, 100)::geometry",
-                [self.geom.wkt],
-            )
-            row = cursor.fetchone()
-            if row and row[0]:
-                return GEOSGeometry(row[0])
-        return None
-
-    def save(self, *args, **kwargs):
-        """
-        Ensures a 100-meter PostGIS buffer polygon is generated whenever a pin is created
-        or its point geometry is updated.
-        """
-        if self.geom:
-            if not self.buffer_geom:
-                self.buffer_geom = self.calculate_buffer()
-            elif self.pk:
-                orig_geom = (
-                    SafetyPin.objects.filter(pk=self.pk)
-                    .values_list("geom", flat=True)
-                    .first()
-                )
-                if orig_geom != self.geom:
-                    self.buffer_geom = self.calculate_buffer()
-
-        super().save(*args, **kwargs)
-
     def __str__(self):
-        return f"{self.title} ({self.get_category_display()})"
+        desc = (self.description[:30] + "...") if self.description and len(self.description) > 30 else (self.description or "Hazard Pin")
+        return f"HazardPin #{self.pk}: {desc}"

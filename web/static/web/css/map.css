@@ -106,8 +106,7 @@ html, body {
   border: 2px solid rgba(0,0,0,0.25);
 }
 
-.peaceful-swatch { background-color: #0072B2; }
-.violent-swatch  { background-color: #D55E00; }
+.hazard-swatch { background-color: #D55E00; }
 .boundary-swatch {
   border-radius: 3px;
   background-color: rgba(111, 66, 193, 0.2);
@@ -147,22 +146,4 @@ html, body {
 
 .modal-header .btn-close {
   filter: invert(1);
-}
-
-.form-check-inline {
-  border: 2px solid #dee2e6;
-  border-radius: 8px;
-  padding: 8px 12px;
-  transition: border-color 0.15s ease, background 0.15s ease;
-  cursor: pointer;
-}
-
-.form-check-inline:has(input[value="PEACEFUL"]:checked) {
-  border-color: #0072B2;
-  background: #e8f4fd;
-}
-
-.form-check-inline:has(input[value="VIOLENT"]:checked) {
-  border-color: #D55E00;
-  background: #fdeee8;
 }

@@ -42,7 +42,7 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_HOST: ${DATABASE_HOST}
       DATABASE_PORT: ${DATABASE_PORT}
-      SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
       DEBUG: ${DJANGO_DEBUG}
     depends_on:
       db:
@@ -55,3 +55,6 @@ volumes:
 networks:
   backend:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -146,6 +146,22 @@ class PinListCreateTest(BaseAPITest):
         resp = self.client.post(self.url, payload, format="json")
         self.assertEqual(resp.status_code, 201)
 
+    def test_create_pin_rejects_outside_paris_when_second_city_exists(self):
+        City.objects.create(
+            code="test",
+            name="Test City",
+            geom=make_poly((-31.0, 39.0, -29.0, 41.0)),
+        )
+        payload = {
+            "description": "Hazard in second city",
+            "latitude": OUTSIDE_POINT[1],
+            "longitude": OUTSIDE_POINT[0],
+            "owner_token": str(uuid.uuid4()),
+        }
+        resp = self.client.post(self.url, payload, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Paris", str(resp.json()))
+
     def test_owner_token_never_serialised(self):
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 200)
@@ -265,6 +281,24 @@ class PinNearestTest(BaseAPITest):
         self.assertIn("distance", data["features"][0]["properties"])
         self.assertEqual(data["features"][0]["properties"]["distance"], 0.0)
 
+    def test_nearest_distance_reported_in_metres(self):
+        HazardPin.objects.create(
+            description="East pin",
+            geom=Point(2.36, 48.8566, srid=4326),
+            owner_token=self.owner_token,
+        )
+        resp = self.client.get(
+            self.url,
+            {"lat": PARIS_CENTER[1], "lon": PARIS_CENTER[0], "limit": 2},
+        )
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        seeded = next(
+            f for f in features if f["properties"]["description"] == "East pin"
+        )
+        distance = seeded["properties"]["distance"]
+        self.assertTrue(400 < distance < 600)
+
     def test_nearest_category_parameter_rejected_with_400(self):
         resp = self.client.get(
             self.url,
@@ -298,6 +332,24 @@ class PinWithinTest(BaseAPITest):
         data = resp.json()
         self.assertEqual(data["count"], 1)
         self.assertIn("distance", data["features"][0]["properties"])
+
+    def test_within_distance_reported_in_metres(self):
+        HazardPin.objects.create(
+            description="East pin",
+            geom=Point(2.36, 48.8566, srid=4326),
+            owner_token=self.owner_token,
+        )
+        resp = self.client.get(
+            self.url,
+            {"lat": PARIS_CENTER[1], "lon": PARIS_CENTER[0], "radius_m": 1000},
+        )
+        self.assertEqual(resp.status_code, 200)
+        features = resp.json()["features"]
+        seeded = next(
+            f for f in features if f["properties"]["description"] == "East pin"
+        )
+        distance = seeded["properties"]["distance"]
+        self.assertTrue(400 < distance < 600)
 
     def test_within_tiny_radius_returns_exact_pin(self):
         resp = self.client.get(

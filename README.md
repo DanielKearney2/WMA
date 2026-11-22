@@ -18,7 +18,7 @@ The application is scoped to Paris for hazard tracking and avoidance routing.
 
 ## Setup (Local & Docker)
 
-1. Copy environment template and adjust if desired:
+1. Copy environment template:
    ```bash
    cp .env.example .env
    ```

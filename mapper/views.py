@@ -147,7 +147,7 @@ def pins_nearest(request):
 
     qs = HazardPin.objects.filter(expires_at__gt=timezone.now())
     qs = (
-        qs.annotate(distance=Distance("geom", center))
+        qs.annotate(distance=Distance("geom", center, spheroid=True))
         .order_by(GeometryDistance("geom", center))[: data["limit"]]
     )
 
@@ -195,7 +195,7 @@ def pins_within(request):
 
     qs = (
         HazardPin.objects.filter(pk__in=pin_ids, expires_at__gt=timezone.now())
-        .annotate(distance=Distance("geom", center))
+        .annotate(distance=Distance("geom", center, spheroid=True))
         .order_by("distance")
     )
 

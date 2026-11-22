@@ -1,4 +1,3 @@
-import uuid
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
@@ -77,54 +76,45 @@ class HazardPinCreateSerializer(serializers.Serializer):
 
     def validate(self, data):
         point = Point(data["longitude"], data["latitude"], srid=4326)
-
-        # Pin must be inside the Paris City boundary
-        paris_qs = City.objects.filter(code="paris", geom__contains=point)
-        city_qs = City.objects.filter(geom__contains=point)
-        if not paris_qs.exists() and not city_qs.exists():
+        if not City.objects.filter(code="paris", geom__contains=point).exists():
             raise serializers.ValidationError(
                 "The pin location is outside the Paris boundary. "
                 "Only pins inside Paris are accepted."
             )
-
-        # No-stacking: no other active pin within 100 m
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id FROM mapper_hazardpin
-                WHERE expires_at > %s
-                  AND ST_DWithin(
-                      geom::geography,
-                      ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                      100
-                  )
-                LIMIT 1
-                """,
-                [timezone.now(), data["longitude"], data["latitude"]],
-            )
-            if cursor.fetchone():
-                raise serializers.ValidationError(
-                    {
-                        "non_field_errors": [
-                            "Another active incident already exists within 100 m of this location."
-                        ]
-                    }
-                )
-
         return data
 
     def create(self, validated_data):
+        lon = validated_data.pop("longitude")
+        lat = validated_data.pop("latitude")
+
         with transaction.atomic():
-            # Lock the City row to prevent concurrent race condition on stacking check
+            # Serialise pin creation on the single Paris row.
             City.objects.select_for_update().filter(code="paris").first()
 
-            point = Point(
-                validated_data.pop("longitude"),
-                validated_data.pop("latitude"),
-                srid=4326,
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM mapper_hazardpin
+                    WHERE expires_at > %s
+                      AND ST_DWithin(
+                          geom::geography,
+                          ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                          100
+                      )
+                    LIMIT 1
+                    """,
+                    [timezone.now(), lon, lat],
+                )
+                if cursor.fetchone():
+                    raise serializers.ValidationError({
+                        "non_field_errors": [
+                            "Another active incident already exists within 100 m of this location."
+                        ]
+                    })
+
+            return HazardPin.objects.create(
+                geom=Point(lon, lat, srid=4326), **validated_data
             )
-            pin = HazardPin.objects.create(geom=point, **validated_data)
-            return pin
 
 
 class ProximityQuerySerializer(serializers.Serializer):
